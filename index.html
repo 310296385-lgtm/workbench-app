@@ -545,6 +545,10 @@
   }
   state = load();
   function save(s){ state = s || state; state.savedAt = Date.now(); localStorage.setItem(KEY, JSON.stringify(state)); scheduleAutoPush(); }
+  // 仅返回“未删除”的项（删除用墓碑标记，不直接移除，便于跨设备同步删除）
+  function live(arr){ return (arr||[]).filter(x => !(x && x._deleted)); }
+  // 软删除：打墓碑标记而不是从数组移除，合并同步时会保留删除动作
+  function softDelete(arr, id){ const it = arr.find(x => x.id === id); if(it){ it._deleted = true; it.deletedAt = Date.now(); } }
 
   /* ---------- GitHub 同步（免费跨设备） ---------- */
   const SYNC_KEY = "wb_sync_cfg_v1";
@@ -594,17 +598,26 @@
   /* ---------- 自动同步引擎：双向合并 + 自动推送/拉取 ---------- */
   let syncTimer = null, syncing = false, lastSyncedAt = 0, pendingPush = false;
   function setSyncStatus(txt){ const el = document.getElementById("syncStatus"); if(el) el.textContent = txt; }
-  // 合并：保留两端各自新增的项；同一项冲突时，以“保存时间更新”的一端为准（两端算法一致，可收敛）
+  // 合并：保留两端各自新增的项；删除用墓碑传播（一端删了，另一端同步后也删，不再补回）；同一项冲突时以“保存时间更新”的一端为准
   function mergeStates(local, remote){
     const out = { todos:[], ideas:[], contents:[], reviews:[], theme: local.theme };
     const lt = local.savedAt||0, rt = remote.savedAt||0;
     out.theme = (rt>=lt) ? remote.theme : local.theme;
     for(const key of ["todos","ideas","contents","reviews"]){
       const L = local[key]||[], R = remote[key]||[];
-      const map = new Map();
-      L.forEach(it => map.set(it.id, it));
-      R.forEach(it => { if(!map.has(it.id)) map.set(it.id, it); else map.set(it.id, (rt>=lt) ? it : map.get(it.id)); });
-      out[key] = [...map.values()];
+      const ids = new Set([...L.map(x=>x.id), ...R.map(x=>x.id)]);
+      const merged = [];
+      ids.forEach(id => {
+        const l = L.find(x=>x.id===id), r = R.find(x=>x.id===id);
+        if(l && r){
+          if(l._deleted && r._deleted) merged.push(l.deletedAt>=r.deletedAt ? l : r);
+          else if(l._deleted) merged.push(l);          // 删除胜出，确保删除能跨端传播
+          else if(r._deleted) merged.push(r);
+          else merged.push((rt>=lt) ? r : l);            // 非删除：取较新的一端
+        } else if(l) merged.push(l);
+        else if(r) merged.push(r);
+      });
+      out[key] = merged;
     }
     out.savedAt = Math.max(lt, rt);
     return out;
@@ -757,14 +770,14 @@
 
   /* ---------- render: dashboard ---------- */
   function renderDashboard(){
-    const todos=state.todos;
+    const todos=live(state.todos);
     const open=todos.filter(t=>!t.done);
     $("#dashTodoCount").textContent = open.length? `${open.length} 项待办` : "今日清空 🎉";
     const box=$("#dashTodos"); box.innerHTML="";
     if(!todos.length){ box.innerHTML=emptyHTML("🗒️","还没有今日重点，添加第一条吧"); }
     todos.forEach(t=>box.appendChild(todoRow(t, ()=>renderAll())));
     // stages — 环形图（精致版，带间隙圆头分段）
-    const c=state.contents;
+    const c=live(state.contents);
     const stages=[["idea","想法",c.filter(x=>x.status==="idea").length],["doing","制作中",c.filter(x=>x.status==="doing").length],["published","已发布",c.filter(x=>x.status==="published").length]];
     const total=stages.reduce((s,x)=>s+x[2],0);
     const R=50, CX=60, CY=60, C=2*Math.PI*R, GAP=16;
@@ -795,7 +808,7 @@
     }).join("");
     // latest review
     const rv=$("#dashReview");
-    const latest=[...state.reviews].sort((a,b)=>b.createdAt-a.createdAt)[0];
+    const latest=[...live(state.reviews)].sort((a,b)=>b.createdAt-a.createdAt)[0];
     if(!latest){ rv.innerHTML=emptyHTML("✍️","还没有复盘记录"); }
     else rv.innerHTML=`<div class="h">${esc(latest.week)}</div>
       <div class="q"><b>完成：</b>${esc(latest.done||"—")}</div>
@@ -820,16 +833,16 @@
     row.querySelector('[data-act="toggle"]').onclick=()=>{ t.done=!t.done; save(); after(); };
     row.querySelector('[data-act="pri"]').onclick=()=>{ const order=["low","mid","high"]; t.priority=order[(order.indexOf(t.priority)+1)%3]; save(); after(); };
     row.querySelector('[data-act="edit"]').onclick=()=>editTodo(t, after);
-    row.querySelector('[data-act="del"]').onclick=()=>{ state.todos=state.todos.filter(x=>x.id!==t.id); save(); after(); toast("已删除"); };
+    row.querySelector('[data-act="del"]').onclick=()=>{ softDelete(state.todos, t.id); save(); after(); toast("已删除"); };
     return row;
   }
 
   /* ---------- 选题灵感 ---------- */
   let ideaFilter="全部";
   function renderIdeas(){
-    const cats=["全部",...new Set(state.ideas.map(i=>i.category))];
+    const cats=["全部",...new Set(live(state.ideas).map(i=>i.category))];
     // quick add
-    const datalist = `<datalist id="ideaCats">${[...new Set(state.ideas.map(i=>i.category))].map(c=>`<option value="${esc(c)}">`).join("")}</datalist>`;
+    const datalist = `<datalist id="ideaCats">${[...new Set(live(state.ideas).map(i=>i.category))].map(c=>`<option value="${esc(c)}">`).join("")}</datalist>`;
     $("#ideaFilters").innerHTML = `<div class="idea-quick">${datalist}
       <input id="ideaQuickTitle" placeholder="快速输入灵感标题…" />
       <input id="ideaQuickCat" list="ideaCats" placeholder="分类（可直接输入）" />
@@ -850,7 +863,7 @@
     });
     $("#ideaAdd").onclick=addIdea;
     $$("#ideaFilters .chip").forEach(ch=>ch.onclick=()=>{ ideaFilter=ch.dataset.c; renderIdeas(); });
-    const list=state.ideas.filter(i=>ideaFilter==="全部"||i.category===ideaFilter).sort((a,b)=>b.createdAt-a.createdAt);
+    const list=live(state.ideas).filter(i=>ideaFilter==="全部"||i.category===ideaFilter).sort((a,b)=>b.createdAt-a.createdAt);
     const grid=$("#ideaGrid"); grid.innerHTML="";
     if(!list.length){ grid.innerHTML=emptyHTML("💡","这个分类还没有灵感，记一条吧"); return; }
     list.forEach(i=>{
@@ -861,7 +874,7 @@
         <div class="inote">${esc(i.note||"")}</div>
         <div class="itime">${fmtDate(i.createdAt)} 记录</div>`;
       el.querySelector('[data-act="edit"]').onclick=()=>editIdea(i);
-      el.querySelector('[data-act="del"]').onclick=()=>{ state.ideas=state.ideas.filter(x=>x.id!==i.id); save(); renderAll(); toast("已删除"); };
+      el.querySelector('[data-act="del"]').onclick=()=>{ softDelete(state.ideas, i.id); save(); renderAll(); toast("已删除"); };
       grid.appendChild(el);
     });
   }
@@ -875,7 +888,7 @@
       + `<button class="btn btn-primary" style="margin-left:auto" id="progAdd">+ 新增内容</button>`;
     $$("#progFilters .chip").forEach(ch=>ch.onclick=()=>{ progFilter=ch.dataset.c; renderProgress(); });
     $("#progAdd").onclick=addContent;
-    const data=state.contents.filter(c=>progFilter==="全部"||c.platform===progFilter);
+    const data=live(state.contents).filter(c=>progFilter==="全部"||c.platform===progFilter);
     const kb=$("#kanban"); kb.innerHTML="";
     STAGES.forEach(([st,label])=>{
       const col=document.createElement("div"); col.className="kboard "+st;
@@ -894,7 +907,7 @@
           </div>`;
         card.querySelectorAll('[data-to]').forEach(b=>b.onclick=()=>{ c.status=b.dataset.to; save(); renderAll(); toast("已移到「"+labelFor(b.dataset.to)+"」"); });
         card.querySelector('[data-edit]').onclick=()=>editContent(c);
-        card.querySelector('[data-del]').onclick=()=>{ if(confirm("确定删除「"+c.title+"」？")){ state.contents=state.contents.filter(x=>x.id!==c.id); save(); renderAll(); toast("已删除"); } };
+        card.querySelector('[data-del]').onclick=()=>{ if(confirm("确定删除「"+c.title+"」？")){ softDelete(state.contents, c.id); save(); renderAll(); toast("已删除"); } };
         col.appendChild(card);
       });
       kb.appendChild(col);
@@ -910,7 +923,7 @@
     const days=new Date(calYear,calMonth+1,0).getDate();
     const first=(new Date(calYear,calMonth,1).getDay()+6)%7; // Monday=0
     const prevDays=new Date(calYear,calMonth,0).getDate();
-    const itemsByDay={}; state.contents.filter(c=>c.planDate).forEach(c=>{ const d=new Date(c.planDate); if(d.getFullYear()===calYear&&d.getMonth()===calMonth){ const day=d.getDate(); itemsByDay[day]=(itemsByDay[day]||[]); itemsByDay[day].push(c); } });
+    const itemsByDay={}; live(state.contents).filter(c=>c.planDate).forEach(c=>{ const d=new Date(c.planDate); if(d.getFullYear()===calYear&&d.getMonth()===calMonth){ const day=d.getDate(); itemsByDay[day]=(itemsByDay[day]||[]); itemsByDay[day].push(c); } });
     const today=new Date(); const isThisMonth=today.getFullYear()===calYear&&today.getMonth()===calMonth;
     let html=`<div class="cal-head"><h3>${calYear}年${calMonth+1}月</h3><div class="cal-nav"><button class="btn" id="calPrev">‹ 上月</button><button class="btn" id="calNext">下月 ›</button><button class="btn btn-primary" id="pubAdd">+ 新增排期</button></div></div>`;
     html+=`<div class="cal-grid">${weekdays.map(w=>`<div class="cal-weekday">周${w}</div>`).join("")}`;
@@ -935,7 +948,7 @@
     $("#calNext").onclick=()=>{ calMonth++; if(calMonth>11){calMonth=0;calYear++;} renderCalendar(); };
     $("#pubAdd").onclick=()=>addContent();
     $$('.cal-item').forEach(el=>el.onclick=e=>{ if(e.target.closest('.ci-del')) return; e.stopPropagation(); const c=state.contents.find(x=>x.id===el.dataset.id); if(c) editContent(c); });
-    $$('.cal-item .ci-del').forEach(btn=>btn.onclick=e=>{ e.stopPropagation(); const id=btn.dataset.del; if(confirm("确定删除这条排期？")){ state.contents=state.contents.filter(x=>x.id!==id); save(); renderAll(); toast("已删除"); } });
+    $$('.cal-item .ci-del').forEach(btn=>btn.onclick=e=>{ e.stopPropagation(); const id=btn.dataset.del; if(confirm("确定删除这条排期？")){ softDelete(state.contents, id); save(); renderAll(); toast("已删除"); } });
     $$('.cal-cell[data-day]').forEach(cell=>cell.onclick=()=>{ const day=+cell.dataset.day; addContentForDate(`${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`); });
   }
   function addContentForDate(date){
@@ -955,7 +968,7 @@
     const fields=[["done","本周完成了什么"],["stuck","卡在哪里"],["next","下周怎么改"],["highlight","高光时刻"]];
     $("#revForm").innerHTML = fields.map(f=>`<label>${f[1]}</label><textarea data-f="${f[0]}" placeholder="${f[1]}…">${editingReviewId?esc((state.reviews.find(r=>r.id===editingReviewId)||{})[f[0]]||""):""}</textarea>`).join("");
     const hist=$("#revHist");
-    const list=[...state.reviews].sort((a,b)=>b.createdAt-a.createdAt);
+    const list=[...live(state.reviews)].sort((a,b)=>b.createdAt-a.createdAt);
     if(!list.length){ hist.innerHTML=emptyHTML("📝","还没有复盘，写下第一周吧"); return; }
     hist.innerHTML=list.map(r=>`
       <div class="rev-card">
@@ -970,7 +983,7 @@
         </div>
       </div>`).join("");
     hist.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{ editingReviewId=b.dataset.edit; renderReview(); });
-    hist.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{ state.reviews=state.reviews.filter(r=>r.id!==b.dataset.del); save(); renderAll(); toast("已删除"); });
+    hist.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{ softDelete(state.reviews, b.dataset.del); save(); renderAll(); toast("已删除"); });
   }
   function saveReview(draft){
     const f={}; $$("#revForm [data-f]").forEach(t=>f[t.dataset.f]=t.value.trim());
@@ -1036,7 +1049,7 @@
         <button class="btn btn-primary" id="c_save">保存</button>
       </div>`);
     $("#c_save").onclick=()=>{ c.title=$("#c_title").value.trim()||c.title; c.platform=$("#c_plat").value.trim(); c.status=$("#c_status").value; c.planDate=$("#c_date").value; save(); closeModal(); renderAll(); };
-    $("#c_del").onclick=()=>{ if(confirm("确定删除「"+c.title+"」？")){ state.contents=state.contents.filter(x=>x.id!==c.id); save(); closeModal(); renderAll(); toast("已删除"); } };
+    $("#c_del").onclick=()=>{ if(confirm("确定删除「"+c.title+"」？")){ softDelete(state.contents, c.id); save(); closeModal(); renderAll(); toast("已删除"); } };
     bindClose();
   }
   function bindClose(){ $$('#modalBox [data-close]').forEach(b=>b.onclick=closeModal); }
