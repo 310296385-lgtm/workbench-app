@@ -138,6 +138,7 @@
   .topbar-right { display: flex; align-items: center; gap: 10px; }
   .sync-btn-top { font-size: 13px; padding: 7px 12px; }
   .sync-btn-top .ic { margin-right: 4px; }
+  .sync-status { font-size: 11px; color: var(--ink-faint); min-width: 0; white-space: nowrap; }
   .icon-btn {
     width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--line-strong);
     background: var(--surface); color: var(--ink); font-size: 18px; display: grid; place-items: center;
@@ -332,6 +333,7 @@
     .topbar { padding: 14px 16px; }
     .sync-btn-top { padding: 8px 10px; }
     .sync-label { display: none; }
+    .sync-status { display: none; }
     .content { padding: 18px 16px 90px; }
     .bottom-nav {
       display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
@@ -402,6 +404,7 @@
         <div class="desc" id="pageDesc">今天该推进的内容</div>
       </div>
       <div class="topbar-right">
+        <span class="sync-status" id="syncStatus"></span>
         <button class="btn btn-ghost sync-btn-top" id="syncBtnTop" title="同步数据（GitHub 推送 / 拉取）"><span class="ic">☁</span><span class="sync-label">同步</span></button>
         <button class="icon-btn" id="themeBtn" title="切换深浅色">🌞</button>
       </div>
@@ -537,7 +540,7 @@
     const d = DEFAULTS(); localStorage.setItem(KEY, JSON.stringify(d)); return d;
   }
   state = load();
-  function save(s){ state = s || state; localStorage.setItem(KEY, JSON.stringify(state)); }
+  function save(s){ state = s || state; state.savedAt = Date.now(); localStorage.setItem(KEY, JSON.stringify(state)); scheduleAutoPush(); }
 
   /* ---------- GitHub 同步（免费跨设备） ---------- */
   const SYNC_KEY = "wb_sync_cfg_v1";
@@ -584,6 +587,68 @@
       toast("已从 GitHub 拉取 ☁");
     } catch(e){ toast("拉取失败：" + e.message); }
   }
+  /* ---------- 自动同步引擎：双向合并 + 自动推送/拉取 ---------- */
+  let syncTimer = null, syncing = false, lastSyncedAt = 0;
+  function setSyncStatus(txt){ const el = document.getElementById("syncStatus"); if(el) el.textContent = txt; }
+  // 合并：保留两端各自新增的项；同一项冲突时，以“保存时间更新”的一端为准（两端算法一致，可收敛）
+  function mergeStates(local, remote){
+    const out = { todos:[], ideas:[], contents:[], reviews:[], theme: local.theme };
+    const lt = local.savedAt||0, rt = remote.savedAt||0;
+    out.theme = (rt>=lt) ? remote.theme : local.theme;
+    for(const key of ["todos","ideas","contents","reviews"]){
+      const L = local[key]||[], R = remote[key]||[];
+      const map = new Map();
+      L.forEach(it => map.set(it.id, it));
+      R.forEach(it => { if(!map.has(it.id)) map.set(it.id, it); else map.set(it.id, (rt>=lt) ? it : map.get(it.id)); });
+      out[key] = [...map.values()];
+    }
+    out.savedAt = Math.max(lt, rt);
+    return out;
+  }
+  async function doSync(pushAfter, silent){
+    const cfg = getCfg();
+    if(!cfg.token || !cfg.owner || !cfg.repo){ if(!silent) toast("请先填写同步设置"); return; }
+    if(syncing) return;
+    try {
+      syncing = true;
+      if(!silent) setSyncStatus("同步中…");
+      const cur = await ghGet(cfg);
+      if(cur){
+        const remote = JSON.parse(b64d(cur.content));
+        if(remote && remote.todos){
+          const merged = mergeStates(state, remote);
+          const changed = JSON.stringify(merged) !== JSON.stringify(state);
+          state = merged;
+          localStorage.setItem(KEY, JSON.stringify(state));
+          if(changed) renderAll();
+        }
+      }
+      if(pushAfter){
+        state.savedAt = state.savedAt || Date.now();
+        await ghPut(cfg, b64e(JSON.stringify(state)), cur ? cur.sha : null);
+      }
+      lastSyncedAt = Date.now();
+      setCfg(Object.assign({}, cfg, { lastSync: lastSyncedAt }));
+      setSyncStatus("已同步 " + new Date(lastSyncedAt).toLocaleTimeString());
+      if(!silent) toast(pushAfter ? "已同步到 GitHub ☁" : "已从 GitHub 拉取 ☁");
+    } catch(e){
+      setSyncStatus("同步失败");
+      if(!silent) toast("同步失败：" + e.message);
+    } finally { syncing = false; }
+  }
+  function scheduleAutoPush(){
+    const cfg = getCfg();
+    if(!cfg.token || !cfg.owner || !cfg.repo) return;
+    if(syncing) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => doSync(true, true), 2500); // 改完 2.5 秒后静默推送
+  }
+  function startAutoSync(){
+    if(navigator.onLine !== false) doSync(false, true); // 打开/上线先拉一次
+    window.addEventListener("online", () => doSync(false, true));
+    setInterval(() => { if(navigator.onLine !== false) doSync(false, true); }, 45000); // 开着页面也每 45s 检查
+  }
+
   function openSync(){
     const c = getCfg();
     const last = c.lastSync ? new Date(c.lastSync).toLocaleString() : "尚未同步";
@@ -612,8 +677,8 @@
       setCfg(cfg); $("#syncLabel").textContent = cfg.owner+"/"+cfg.repo;
       toast("已保存配置");
     };
-    $("#s_push").onclick = () => { const cfg=getCfg(); if(!cfg.token){toast("先保存配置");return;} pushGithub(); };
-    $("#s_pull").onclick = () => { const cfg=getCfg(); if(!cfg.token){toast("先保存配置");return;} pullGithub(); };
+    $("#s_push").onclick = () => { const cfg=getCfg(); if(!cfg.token){toast("先保存配置");return;} doSync(true); };
+    $("#s_pull").onclick = () => { const cfg=getCfg(); if(!cfg.token){toast("先保存配置");return;} doSync(false); };
     bindClose();
   }
 
@@ -1006,7 +1071,7 @@
 
   /* ---------- init ---------- */
   (function(){ const c=getCfg(); if(c.owner && c.repo) $("#syncLabel").textContent = c.owner+"/"+c.repo; })();
-  applyTheme(); renderNav(); renderAll();
+  applyTheme(); renderNav(); renderAll(); startAutoSync();
   // start at dashboard
   current="dashboard";
   NAV.forEach(n=>{ const v=document.getElementById("view-"+n.id); if(v) v.classList.toggle("active", n.id==="dashboard"); });
