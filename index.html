@@ -136,6 +136,8 @@
   .topbar h1 { font-size: 20px; margin: 0; font-weight: 800; }
   .topbar .desc { font-size: 13px; color: var(--ink-soft); margin-top: 2px; }
   .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .sync-btn-top { font-size: 13px; padding: 7px 12px; }
+  .sync-btn-top .ic { margin-right: 4px; }
   .icon-btn {
     width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--line-strong);
     background: var(--surface); color: var(--ink); font-size: 18px; display: grid; place-items: center;
@@ -328,6 +330,8 @@
   @media (max-width: 767px) {
     .sidebar { display: none; }
     .topbar { padding: 14px 16px; }
+    .sync-btn-top { padding: 8px 10px; }
+    .sync-label { display: none; }
     .content { padding: 18px 16px 90px; }
     .bottom-nav {
       display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
@@ -398,6 +402,7 @@
         <div class="desc" id="pageDesc">今天该推进的内容</div>
       </div>
       <div class="topbar-right">
+        <button class="btn btn-ghost sync-btn-top" id="syncBtnTop" title="同步数据（GitHub 推送 / 拉取）"><span class="ic">☁</span><span class="sync-label">同步</span></button>
         <button class="icon-btn" id="themeBtn" title="切换深浅色">🌞</button>
       </div>
     </header>
@@ -992,6 +997,7 @@
   $("#revSave").onclick=()=>saveReview(false);
   $("#revDraft").onclick=()=>saveReview(true);
   $("#syncBtn").onclick=openSync;
+  $("#syncBtnTop").onclick=openSync;
 
   /* ---------- render all ---------- */
   function renderAll(){
