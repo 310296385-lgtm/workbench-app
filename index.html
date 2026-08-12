@@ -588,7 +588,7 @@
     } catch(e){ toast("拉取失败：" + e.message); }
   }
   /* ---------- 自动同步引擎：双向合并 + 自动推送/拉取 ---------- */
-  let syncTimer = null, syncing = false, lastSyncedAt = 0;
+  let syncTimer = null, syncing = false, lastSyncedAt = 0, pendingPush = false;
   function setSyncStatus(txt){ const el = document.getElementById("syncStatus"); if(el) el.textContent = txt; }
   // 合并：保留两端各自新增的项；同一项冲突时，以“保存时间更新”的一端为准（两端算法一致，可收敛）
   function mergeStates(local, remote){
@@ -607,7 +607,7 @@
   }
   async function doSync(pushAfter, silent){
     const cfg = getCfg();
-    if(!cfg.token || !cfg.owner || !cfg.repo){ if(!silent) toast("请先填写同步设置"); return; }
+    if(!cfg.token || !cfg.owner || !cfg.repo){ if(!silent){ toast("请先填写同步设置"); openSync(); } else { setSyncStatus("未配置同步"); } return; }
     if(syncing) return;
     try {
       syncing = true;
@@ -634,18 +634,17 @@
     } catch(e){
       setSyncStatus("同步失败");
       if(!silent) toast("同步失败：" + e.message);
-    } finally { syncing = false; }
+    } finally { syncing = false; if(pendingPush){ pendingPush = false; setTimeout(()=>doSync(true, true), 400); } }
   }
   function scheduleAutoPush(){
     const cfg = getCfg();
     if(!cfg.token || !cfg.owner || !cfg.repo) return;
-    if(syncing) return;
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => doSync(true, true), 2500); // 改完 2.5 秒后静默推送
+    syncTimer = setTimeout(() => { if(syncing){ pendingPush = true; } else { doSync(true, true); } }, 2500); // 改完 2.5 秒后静默推送
   }
   function startAutoSync(){
-    if(navigator.onLine !== false) doSync(false, true); // 打开/上线先拉一次
-    window.addEventListener("online", () => doSync(false, true));
+    if(navigator.onLine !== false) doSync(false, false); // 打开/上线先拉一次（显示反馈）
+    window.addEventListener("online", () => doSync(false, false));
     setInterval(() => { if(navigator.onLine !== false) doSync(false, true); }, 45000); // 开着页面也每 45s 检查
   }
 
