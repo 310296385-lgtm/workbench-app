@@ -244,6 +244,9 @@
   .cal-item .ci-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cal-item .ci-del { flex: 0 0 auto; border: none; background: transparent; color: var(--ink-faint); font-size: 11px; line-height: 1; padding: 0 2px; cursor: pointer; border-radius: 4px; }
   .cal-item .ci-del:hover { color: var(--danger); }
+  .cal-item.published { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+  .cal-item.published .ci-title { color: var(--accent); }
+  .cal-item.planned { border-left: 3px solid var(--accent-2); }
   .cal-weekday { font-size: 12px; font-weight: 700; color: var(--ink-soft); text-align: center; padding: 6px 0; }
 
   .rev-mini .h { font-size: 13px; color: var(--ink-soft); margin-bottom: 4px; font-weight: 700; }
@@ -961,7 +964,7 @@
             <button class="move-btn" data-edit="1">✎</button>
             <button class="move-btn del-btn" data-del="1">🗑</button>
           </div>`;
-        card.querySelectorAll('[data-to]').forEach(b=>b.onclick=()=>{ c.status=b.dataset.to; save(); renderAll(); toast("已移到「"+labelFor(b.dataset.to)+"」"); });
+        card.querySelectorAll('[data-to]').forEach(b=>b.onclick=()=>{ c.status=b.dataset.to; if(b.dataset.to==="published" && !c.planDate){ c.planDate=addDays(0); save(); renderAll(); toast("已发布，并自动填入今天为发布日期，已同步到发布日历"); } else { save(); renderAll(); toast("已移到「"+labelFor(b.dataset.to)+"」"); } });
         card.querySelector('[data-edit]').onclick=()=>editContent(c);
         card.querySelector('[data-del]').onclick=()=>{ if(confirm("确定删除「"+c.title+"」？")){ softDelete(state.contents, c.id); save(); renderAll(); toast("已删除"); } };
         col.appendChild(card);
@@ -992,7 +995,7 @@
       const isToday=isThisMonth&&today.getDate()===d;
       html+=`<div class="cal-cell ${isToday?'today':''} ${has?'has':''}" data-day="${d}"><span class="cal-num">${d}</span>`;
       if(has){
-        html+=itemsByDay[d].map(c=>`<div class="cal-item" data-id="${c.id}"><span class="ci-title">${esc(c.title)}</span><button class="ci-del" data-del="${c.id}" title="删除">🗑</button></div>`).join("");
+        html+=itemsByDay[d].map(c=>{ const isPub=c.status==="published"; const pubCls=isPub?"published":"planned"; const lead=isPub?"✓ ":""; return `<div class="cal-item ${pubCls}" data-id="${c.id}"><span class="ci-title">${lead}${esc(c.title)}</span><button class="ci-del" data-del="${c.id}" title="删除">🗑</button></div>`; }).join("");
       }
       html+=`</div>`;
     }
