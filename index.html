@@ -241,12 +241,17 @@
   .cal-cell.today .cal-num { color: var(--accent-2); }
   .cal-item { font-size: 11px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; padding: 3px 4px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; overflow: hidden; }
   .cal-item:hover { border-color: var(--accent); }
-  .cal-item .ci-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cal-item .ci-del { flex: 0 0 auto; border: none; background: transparent; color: var(--ink-faint); font-size: 11px; line-height: 1; padding: 0 2px; cursor: pointer; border-radius: 4px; }
-  .cal-item .ci-del:hover { color: var(--danger); }
+  .cal-item .ci-title { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
   .cal-item.published { border-left: 3px solid var(--accent); background: var(--accent-soft); }
   .cal-item.published .ci-title { color: var(--accent); }
   .cal-item.planned { border-left: 3px solid var(--accent-2); }
+  .cd-status { display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; margin-bottom: 10px; }
+  .cd-status.pub { background: var(--accent-soft); color: var(--accent); }
+  .cd-status.plan { background: rgba(217,119,6,.12); color: var(--accent-2); }
+  .cd-title { font-size: 20px; font-weight: 800; line-height: 1.35; margin: 0 0 14px; word-break: break-word; }
+  .cd-row { display: flex; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  .cd-row .cd-k { flex: 0 0 70px; color: var(--ink-faint); }
+  .cd-row .cd-v { flex: 1; word-break: break-word; }
   .cal-weekday { font-size: 12px; font-weight: 700; color: var(--ink-soft); text-align: center; padding: 6px 0; }
 
   .rev-mini .h { font-size: 13px; color: var(--ink-soft); margin-bottom: 4px; font-weight: 700; }
@@ -308,7 +313,7 @@
   /* ---------- Modal ---------- */
   .modal-mask { position: fixed; inset: 0; background: rgba(40,35,28,.45); display: none; place-items: center; z-index: 100; padding: 20px; }
   .modal-mask.show { display: grid; }
-  .modal { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); width: 100%; max-width: 460px; padding: 22px; box-shadow: var(--shadow-md); }
+  .modal { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); width: 100%; max-width: 460px; padding: 22px; box-shadow: var(--shadow-md); max-height: 90vh; overflow-y: auto; }
   .modal h3 { margin: 0 0 16px; font-size: 17px; }
   .modal label { display: block; font-size: 13px; font-weight: 700; margin: 12px 0 5px; color: var(--ink-soft); }
   .modal label:first-of-type { margin-top: 0; }
@@ -995,7 +1000,7 @@
       const isToday=isThisMonth&&today.getDate()===d;
       html+=`<div class="cal-cell ${isToday?'today':''} ${has?'has':''}" data-day="${d}"><span class="cal-num">${d}</span>`;
       if(has){
-        html+=itemsByDay[d].map(c=>{ const isPub=c.status==="published"; const pubCls=isPub?"published":"planned"; const lead=isPub?"✓ ":""; return `<div class="cal-item ${pubCls}" data-id="${c.id}"><span class="ci-title">${lead}${esc(c.title)}</span><button class="ci-del" data-del="${c.id}" title="删除">🗑</button></div>`; }).join("");
+        html+=itemsByDay[d].map(c=>{ const isPub=c.status==="published"; const pubCls=isPub?"published":"planned"; const lead=isPub?"✓ ":""; return `<div class="cal-item ${pubCls}" data-id="${c.id}"><span class="ci-title">${lead}${esc(c.title)}</span></div>`; }).join("");
       }
       html+=`</div>`;
     }
@@ -1006,8 +1011,7 @@
     $("#calPrev").onclick=()=>{ calMonth--; if(calMonth<0){calMonth=11;calYear--;} renderCalendar(); };
     $("#calNext").onclick=()=>{ calMonth++; if(calMonth>11){calMonth=0;calYear++;} renderCalendar(); };
     $("#pubAdd").onclick=()=>addContent();
-    $$('.cal-item').forEach(el=>el.onclick=e=>{ if(e.target.closest('.ci-del')) return; e.stopPropagation(); const c=state.contents.find(x=>x.id===el.dataset.id); if(c) editContent(c); });
-    $$('.cal-item .ci-del').forEach(btn=>btn.onclick=e=>{ e.stopPropagation(); const id=btn.dataset.del; if(confirm("确定删除这条排期？")){ softDelete(state.contents, id); save(); renderAll(); toast("已删除"); } });
+    $$('.cal-item').forEach(el=>el.onclick=e=>{ e.stopPropagation(); const c=state.contents.find(x=>x.id===el.dataset.id); if(c) openContentDetail(c); });
     $$('.cal-cell[data-day]').forEach(cell=>cell.onclick=()=>{ const day=+cell.dataset.day; addContentForDate(`${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`); });
   }
   function addContentForDate(date){
@@ -1109,6 +1113,24 @@
       </div>`);
     $("#c_save").onclick=()=>{ c.title=$("#c_title").value.trim()||c.title; c.platform=$("#c_plat").value.trim(); c.status=$("#c_status").value; c.planDate=$("#c_date").value; save(); closeModal(); renderAll(); };
     $("#c_del").onclick=()=>{ if(confirm("确定删除「"+c.title+"」？")){ softDelete(state.contents, c.id); save(); closeModal(); renderAll(); toast("已删除"); } };
+    bindClose();
+  }
+  function openContentDetail(c){
+    const isPub=c.status==="published";
+    const stg=STAGES.find(s=>s[0]===c.status);
+    openModal(`<h3>内容详情</h3>
+      <div class="cd-status ${isPub?'pub':'plan'}">${isPub?'✓ 已发布':'计划中'}</div>
+      <div class="cd-title">${esc(c.title)}</div>
+      <div class="cd-row"><span class="cd-k">平台</span><span class="cd-v">${esc(c.platform||"—")}</span></div>
+      <div class="cd-row"><span class="cd-k">阶段</span><span class="cd-v">${esc((stg&&stg[1])||c.status)}</span></div>
+      <div class="cd-row"><span class="cd-k">发布日期</span><span class="cd-v">${esc(c.planDate||"—")}</span></div>
+      <div class="modal-actions">
+        <button class="btn btn-danger" id="cd_del">🗑 删除</button>
+        <button class="btn btn-ghost" data-close>关闭</button>
+        <button class="btn btn-primary" id="cd_edit">✎ 编辑</button>
+      </div>`);
+    $("#cd_edit").onclick=()=>editContent(c);
+    $("#cd_del").onclick=()=>{ if(confirm("确定删除「"+c.title+"」？删除不可恢复。")){ softDelete(state.contents, c.id); save(); closeModal(); renderAll(); toast("已删除"); } };
     bindClose();
   }
   function bindClose(){ $$('#modalBox [data-close]').forEach(b=>b.onclick=closeModal); }
