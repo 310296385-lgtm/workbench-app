@@ -312,6 +312,10 @@
   .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
   .modal-hint { font-size: 12px; color: var(--ink-faint); margin: 8px 0 4px; line-height: 1.5; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .modal-sep { border: none; border-top: 1px solid var(--line); margin: 18px 0 10px; }
+  .modal-sub { font-size: 14px; margin: 4px 0 2px; }
+  .chk-line { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 6px 0; cursor: pointer; }
+  .chk-line input { width: auto; }
 
   /* ---------- Mobile bottom nav ---------- */
   .bottom-nav { display: none; }
@@ -665,8 +669,44 @@
     setInterval(() => { if(navigator.onLine !== false) doSync(false, true); }, 45000); // 开着页面也每 45s 检查
   }
 
+  /* ---------- 自动清理历史数据：用墓碑软删，清理会同步到所有设备 ---------- */
+  const CL_KEY = "wb_cleanup_cfg_v1";
+  function getCleanupCfg(){
+    const def = { enabled:true, types:{todo:true,content:true,review:false,idea:false}, maxAgeDays:30, checkEveryDays:7, lastRun:0 };
+    try { const s = JSON.parse(localStorage.getItem(CL_KEY)); return s ? Object.assign(def, s) : def; } catch(e){ return def; }
+  }
+  function setCleanupCfg(c){ localStorage.setItem(CL_KEY, JSON.stringify(c)); }
+  function runCleanup(){
+    const cfg = getCleanupCfg();
+    if(!cfg.enabled) return;
+    const now = Date.now();
+    if(now - (cfg.lastRun||0) < cfg.checkEveryDays*86400000) return; // 还没到检查周期
+    const maxAge = cfg.maxAgeDays*86400000;
+    let removed = 0;
+    if(cfg.types.todo){
+      state.todos.forEach(t => { if(t.done && (now - (t.createdAt||now)) > maxAge){ softDelete(state.todos, t.id); removed++; } });
+    }
+    if(cfg.types.content){
+      state.contents.forEach(c => { const pd = c.planDate ? new Date(c.planDate).getTime() : (c.createdAt||now); if(c.status==="published" && (now - pd) > maxAge){ softDelete(state.contents, c.id); removed++; } });
+    }
+    if(cfg.types.review){
+      state.reviews.forEach(r => { if((now - (r.createdAt||now)) > maxAge){ softDelete(state.reviews, r.id); removed++; } });
+    }
+    if(cfg.types.idea){
+      state.ideas.forEach(i => { if((now - (i.createdAt||now)) > maxAge){ softDelete(state.ideas, i.id); removed++; } });
+    }
+    cfg.lastRun = now;
+    setCleanupCfg(cfg);
+    if(removed > 0){
+      save(); // 触发自动推送，让另一端也跟着清
+      renderAll();
+      toast("已自动清理 " + removed + " 条历史数据 🧹");
+    }
+  }
+
   function openSync(){
     const c = getCfg();
+    const cl = getCleanupCfg();
     const last = c.lastSync ? new Date(c.lastSync).toLocaleString() : "尚未同步";
     openModal(`<h3>☁ GitHub 同步设置</h3>
       <p class="modal-hint">数据存到你自己的私有仓库，免费跨设备同步。Token 仅保存在本机浏览器，不会上传给我。</p>
@@ -681,6 +721,17 @@
         <div><label>文件路径</label><input id="s_path" placeholder="data.json" value="${esc(c.path||"data.json")}" /></div>
       </div>
       <p class="modal-hint">上次同步：${esc(last)}</p>
+      <hr class="modal-sep" />
+      <h4 class="modal-sub">🧹 自动清理历史数据</h4>
+      <p class="modal-hint">周期性删除"已做完/已发布且较旧"的数据，清理会同步到所有设备。删除不可恢复，请谨慎勾选。</p>
+      <label class="chk-line"><input type="checkbox" id="cl_todo" ${cl.types.todo?'checked':''} /> 已完成的待办</label>
+      <label class="chk-line"><input type="checkbox" id="cl_content" ${cl.types.content?'checked':''} /> 已发布的排期</label>
+      <label class="chk-line"><input type="checkbox" id="cl_review" ${cl.types.review?'checked':''} /> 旧的复盘</label>
+      <label class="chk-line"><input type="checkbox" id="cl_idea" ${cl.types.idea?'checked':''} /> 灵感（一般不删）</label>
+      <div class="row2">
+        <div><label>保留天数（超过即删）</label><input id="cl_age" type="number" min="1" value="${cl.maxAgeDays}" /></div>
+        <div><label>每几天检查一次</label><input id="cl_every" type="number" min="1" value="${cl.checkEveryDays}" /></div>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" data-close>关闭</button>
         <button class="btn" id="s_pull">拉取</button>
@@ -691,6 +742,11 @@
       const cfg = { token: $("#s_token").value.trim(), owner: $("#s_owner").value.trim(), repo: $("#s_repo").value.trim(), branch: $("#s_branch").value.trim()||"main", path: $("#s_path").value.trim()||"data.json" };
       if(!cfg.token || !cfg.owner || !cfg.repo){ toast("请填完整"); return; }
       setCfg(cfg); $("#syncLabel").textContent = cfg.owner+"/"+cfg.repo;
+      const cc = getCleanupCfg();
+      cc.types = { todo:$("#cl_todo").checked, content:$("#cl_content").checked, review:$("#cl_review").checked, idea:$("#cl_idea").checked };
+      cc.maxAgeDays = Math.max(1, parseInt($("#cl_age").value)||30);
+      cc.checkEveryDays = Math.max(1, parseInt($("#cl_every").value)||7);
+      setCleanupCfg(cc);
       toast("已保存配置");
     };
     $("#s_push").onclick = () => { const cfg=getCfg(); if(!cfg.token){toast("先保存配置");return;} doSync(true); };
@@ -1070,7 +1126,10 @@
   /* ---------- quick adds ---------- */
   function addTodo(where){
     const inp=$(where); const v=inp.value.trim(); if(!v) return;
-    state.todos.unshift({id:uid(),text:v,priority:"mid",done:false,createdAt:Date.now()});
+    const tid = uid();
+    state.todos.unshift({id:tid,text:v,priority:"mid",done:false,createdAt:Date.now()});
+    // 联动：在「内容进度 · 想法」同步生成一条同名记录，方便后续推进到制作/发布
+    state.contents.push({id:uid(), title:v, platform:"", status:"idea", planDate:"", createdAt:Date.now(), _srcTodo:tid});
     inp.value=""; save(); renderAll();
   }
   $("#dashAdd").onclick=()=>addTodo("#dashQuick");
@@ -1087,7 +1146,7 @@
 
   /* ---------- init ---------- */
   (function(){ const c=getCfg(); if(c.owner && c.repo) $("#syncLabel").textContent = c.owner+"/"+c.repo; })();
-  applyTheme(); renderNav(); renderAll(); startAutoSync();
+  applyTheme(); renderNav(); renderAll(); startAutoSync(); runCleanup();
   // start at dashboard
   current="dashboard";
   NAV.forEach(n=>{ const v=document.getElementById("view-"+n.id); if(v) v.classList.toggle("active", n.id==="dashboard"); });
